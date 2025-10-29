@@ -104,7 +104,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
             <h1 className="text-2xl font-bold">ScrumDinger</h1>
           </div>
           <p className="text-xs text-light-text-secondary dark:text-dark-text-secondary mt-1">
-            A product By Mardromus
+            A Product By Mardromus
           </p>
         </div>
 

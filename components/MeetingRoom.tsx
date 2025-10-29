@@ -307,7 +307,7 @@ export const MeetingRoom: React.FC<MeetingRoomProps> = ({ scrum, onMeetingEnd })
           <LogoIcon className="w-8 h-8" />
           <div>
             <h1 className="text-xl font-bold">ScrumDinger</h1>
-            <p className="text-xs text-light-text-secondary dark:text-dark-text-secondary">A product By Mardromus</p>
+            <p className="text-xs text-light-text-secondary dark:text-dark-text-secondary">A Product By Mardromus</p>
           </div>
         </div>
         

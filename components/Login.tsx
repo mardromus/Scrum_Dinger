@@ -25,7 +25,7 @@ export const Login: React.FC<LoginProps> = ({ onLogin }) => {
           <LogoIcon className="w-16 h-16" />
         </div>
         <h1 className="text-4xl font-bold text-dark-text-primary mb-1">Welcome to ScrumDinger</h1>
-        <p className="text-xs text-dark-text-secondary mb-2">A product By Mardromus</p>
+        <p className="text-xs text-dark-text-secondary mb-2">A Product By Mardromus</p>
         
         <p className="text-dark-text-secondary mb-8 mt-4">Your daily scrum, simplified.</p>
         <button

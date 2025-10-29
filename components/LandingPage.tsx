@@ -24,7 +24,7 @@ export const LandingPage: React.FC<LoginProps> = ({ onLogin }) => {
         <h1 className="text-4xl md:text-6xl font-extrabold leading-tight mb-4">
           Welcome to <span className="text-transparent bg-clip-text bg-gradient-to-r from-brand-primary to-brand-secondary">ScrumDinger</span>
         </h1>
-        <p className="text-sm font-medium text-light-text-secondary dark:text-dark-text-secondary mb-8">A product By Mardromus</p>
+        <p className="text-sm font-medium text-light-text-secondary dark:text-dark-text-secondary mb-8">A Product By Mardromus</p>
 
         <p className="text-lg md:text-xl text-light-text-secondary dark:text-dark-text-secondary max-w-3xl mx-auto mb-10">
           The intelligent, automated platform to make your daily stand-ups faster, more focused, and actually productive.
