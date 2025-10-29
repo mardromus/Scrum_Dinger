@@ -1,0 +1,5 @@
+{
+  "name": "ScrumDinger Web",
+  "description": "A daily scrum management platform for agile teams. It helps schedule and run daily stand-ups, automatically manages time per speaker, and uses AI to generate meeting summaries.",
+  "requestFramePermissions": []
+}

@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ScrumDinger Web</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+      tailwind.config = {
+        darkMode: 'class',
+        theme: {
+          extend: {
+            colors: {
+              'brand-primary': '#4F46E5',
+              'brand-secondary': '#7C3AED',
+              
+              // Dark theme
+              'dark-bg': '#111827',
+              'dark-surface': '#1F2937',
+              'dark-border': '#374151',
+              'dark-text-primary': '#F9FAFB',
+              'dark-text-secondary': '#9CA3AF',
+
+              // Light theme
+              'light-bg': '#F9FAFB',
+              'light-surface': '#FFFFFF',
+              'light-border': '#E5E7EB',
+              'light-text-primary': '#111827',
+              'light-text-secondary': '#6B7281',
+            },
+            keyframes: {
+              'fade-in': {
+                '0%': { opacity: '0', transform: 'translateY(10px)' },
+                '100%': { opacity: '1', transform: 'translateY(0)' },
+              },
+              'pulse-bg': {
+                '0%, 100%': { backgroundColor: 'rgba(239, 68, 68, 0.1)' },
+                '50%': { backgroundColor: 'rgba(239, 68, 68, 0.3)' },
+              }
+            },
+            animation: {
+              'fade-in': 'fade-in 0.5s ease-out forwards',
+              'pulse-bg': 'pulse-bg 1.5s cubic-bezier(0.4, 0, 0.6, 1) infinite',
+            }
+          }
+        }
+      }
+    </script>
+  <script type="importmap">
+{
+  "imports": {
+    "react/": "https://aistudiocdn.com/react@^19.2.0/",
+    "react": "https://aistudiocdn.com/react@^19.2.0",
+    "react-dom/": "https://aistudiocdn.com/react-dom@^19.2.0/",
+    "@google/genai": "https://aistudiocdn.com/@google/genai@^1.27.0"
+  }
+}
+</script>
+</head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/index.tsx"></script>
+  </body>
+</html>
