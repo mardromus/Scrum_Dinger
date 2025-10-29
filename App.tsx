@@ -14,6 +14,11 @@ import { ProfileSettingsModal } from './components/ProfileSettingsModal';
 import { Analytics } from './pages/Analytics';
 import { JiraIntegrationModal } from './components/JiraIntegrationModal';
 import { parseSummaryForActionItems } from './utility/summaryParser';
+import { auth, db } from './services/firebase';
+import { onAuthStateChanged } from 'firebase/auth';
+import { signInWithGoogle, signOutUser } from './services/firebase';
+import { doc, setDoc, Timestamp, collection, query, where, onSnapshot } from 'firebase/firestore';
+import teamService from './services/teamService';
 import { CreateTeamModal } from './components/CreateTeamModal';
 import { TeamSettingsModal } from './components/TeamSettingsModal';
 
@@ -44,31 +49,62 @@ const AppContent: React.FC = () => {
     root.classList.add(theme);
   }, [theme]);
 
-  const handleLogin = () => {
-    const loggedInUser: User = {
-      uid: '12345',
-      name: 'Alex Doe',
-      email: 'alex.doe@example.com',
-      avatarUrl: 'https://i.pravatar.cc/150?u=alex.doe@example.com',
-      role: 'Scrum Master',
-    };
-    setUser(loggedInUser);
+  // Subscribe to Firebase auth state and map to local User shape
+  React.useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, (fbUser) => {
+      if (fbUser) {
+        const mappedUser = {
+          uid: fbUser.uid,
+          name: fbUser.displayName || (fbUser.email ? fbUser.email.split('@')[0] : 'User'),
+          email: fbUser.email || '',
+          avatarUrl: fbUser.photoURL || '',
+          role: 'Member',
+        } as any;
+        setUser(mappedUser);
+        // Ensure at least one team exists for new users
+        if (!teams.length) {
+          const initialTeam = {
+            id: `team-${Date.now()}`,
+            name: `${mappedUser.name}'s Team`,
+            members: [{ uid: mappedUser.uid, name: mappedUser.name, email: mappedUser.email, role: 'Scrum Master' }]
+          };
+          setTeams([initialTeam]);
+          setSelectedTeamId(initialTeam.id);
+        }
+        
+      } else {
+        setUser(null);
+      }
+    });
+    return () => unsubscribe();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
-    const initialTeam: Team = {
-      id: `team-${Date.now()}`,
-      name: "Alex's Agile Team",
-      members: [{ 
-        uid: loggedInUser.uid, 
-        name: loggedInUser.name, 
-        email: loggedInUser.email, 
-        role: 'Scrum Master' 
-      }]
-    };
-    setTeams([initialTeam]);
-    setSelectedTeamId(initialTeam.id);
+  // Subscribe to teams where the user is a member
+  React.useEffect(() => {
+    if (!user) return;
+    const q = query(collection(db, 'teams'), where('membersIds', 'array-contains', user.uid));
+    const unsub = onSnapshot(q, (snap) => {
+      const loaded: Team[] = snap.docs.map(d => d.data() as Team);
+      setTeams(loaded);
+      if (!selectedTeamId && loaded.length) setSelectedTeamId(loaded[0].id);
+    }, (err) => console.warn('teams onSnapshot error', err));
+    return () => unsub();
+  }, [user?.uid]);
+
+  const handleLogin = async () => {
+    try {
+      await signInWithGoogle();
+      // onAuthStateChanged will update user state
+    } catch (err) {
+      console.error('Google sign-in failed', err);
+      alert('Sign-in failed. Please try again.');
+    }
   };
 
   const handleLogout = () => {
+    // Sign out from Firebase and clear local state
+    signOutUser().catch(err => console.warn('Error signing out:', err));
     setUser(null);
     setActiveScrum(null);
     setCurrentPage('dashboard');
@@ -110,7 +146,37 @@ const AppContent: React.FC = () => {
             newScrums.push(createScrum(newDate));
         }
     }
-    setScrums(prev => [...prev, ...newScrums]);
+        setScrums(prev => [...prev, ...newScrums]);
+
+        // Persist created scrums to Firestore if auth present
+        try {
+          if (auth?.currentUser) {
+            newScrums.forEach(async (s) => {
+              try {
+                const docRef = doc(db, 'scrums', s.id);
+                await setDoc(docRef, {
+                  id: s.id,
+                  title: s.title,
+                  attendees: s.attendees,
+                  durationMinutes: s.durationMinutes,
+                  timePerSpeakerSeconds: s.timePerSpeakerSeconds,
+                  scheduledAt: Timestamp.fromDate(new Date(s.scheduledAt)),
+                  status: s.status,
+                  teamId: s.teamId,
+                  isRecurring: s.isRecurring || false,
+                  recurring: s.recurring || null,
+                  createdBy: auth.currentUser?.uid,
+                  createdAt: Timestamp.fromDate(new Date()),
+                  remindersSent: { '30': false, '10': false },
+                });
+              } catch (err) {
+                console.warn('Failed to persist scrum to Firestore', err);
+              }
+            });
+          }
+        } catch (err) {
+          console.warn('Error checking auth for Firestore write', err);
+        }
   };
   
   const handleStartScrum = (scrumId: string) => {
@@ -166,40 +232,39 @@ const AppContent: React.FC = () => {
   // Team Handlers
   const handleCreateTeam = (name: string) => {
     if (!user) return;
-    const newTeam: Team = {
-      id: `team-${Date.now()}`,
-      name,
-      members: [{ uid: user.uid, name: user.name, email: user.email, role: 'Scrum Master' }]
-    };
-    setTeams(prev => [...prev, newTeam]);
-    setSelectedTeamId(newTeam.id);
+    (async () => {
+      try {
+        const created = await teamService.createTeam({ name, members: [{ uid: user.uid, name: user.name, email: user.email, role: 'Scrum Master' }] });
+        // the onSnapshot for teams will pick up the created team; but setSelectedTeamId now
+        setSelectedTeamId(created.id);
+      } catch (err) {
+        console.warn('createTeam failed', err);
+      }
+    })();
   };
 
   const handleInviteMember = (teamId: string, email: string) => {
-    setTeams(prevTeams => prevTeams.map(team => {
-      if (team.id === teamId) {
-        const newMember: TeamMember = {
-          uid: `user-${Date.now()}`,
-          name: email.split('@')[0],
-          email,
-          role: 'Member'
-        };
-        return { ...team, members: [...team.members, newMember] };
+    (async () => {
+      try {
+        const res = await teamService.inviteMember(teamId, email, user?.name);
+        // Show the invite code so the inviter can share it if email hasn't been delivered yet
+        alert(`Invite created. Code: ${res.code}`);
+      } catch (err) {
+        console.warn('inviteMember failed', err);
+        alert('Failed to create invite');
       }
-      return team;
-    }));
+    })();
   };
 
   const handleUpdateMemberRole = (teamId: string, memberId: string, newRole: TeamMemberRole) => {
-    setTeams(prevTeams => prevTeams.map(team => {
-      if (team.id === teamId) {
-        return {
-          ...team,
-          members: team.members.map(m => m.uid === memberId ? { ...m, role: newRole } : m)
-        };
+    (async () => {
+      try {
+        await teamService.updateMemberRole(teamId, memberId, newRole);
+        // teams will update via snapshot
+      } catch (err) {
+        console.warn('updateMemberRole failed', err);
       }
-      return team;
-    }));
+    })();
   };
   
   const handleRemoveMember = (teamId: string, memberId: string) => {
@@ -207,12 +272,13 @@ const AppContent: React.FC = () => {
       alert("You cannot remove yourself from the team.");
       return;
     }
-    setTeams(prevTeams => prevTeams.map(team => {
-      if (team.id === teamId) {
-        return { ...team, members: team.members.filter(m => m.uid !== memberId) };
+    (async () => {
+      try {
+        await teamService.removeMember(teamId, memberId);
+      } catch (err) {
+        console.warn('removeMember failed', err);
       }
-      return team;
-    }));
+    })();
   };
 
   const selectedTeam = teams.find(t => t.id === selectedTeamId);

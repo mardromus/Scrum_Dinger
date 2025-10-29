@@ -6,6 +6,19 @@ import { UsersIcon } from '../context/UsersIcon';
 import { ListIcon } from './icons/ListIcon';
 import { LogoIcon } from './icons/LogoIcon';
 import { DocumentTextIcon } from './icons/DocumentTextIcon';
+import { db } from '../services/firebase';
+import {
+  doc,
+  collection,
+  setDoc,
+  getDoc,
+  addDoc,
+  onSnapshot,
+  updateDoc,
+  deleteDoc,
+  query,
+  getDocs,
+} from 'firebase/firestore';
 
 interface MeetingRoomProps {
   scrum: Scrum;
@@ -72,6 +85,12 @@ export const MeetingRoom: React.FC<MeetingRoomProps> = ({ scrum, onMeetingEnd })
   const { timeLeft, isActive, start, pause, reset, addTime } = useTimer(speakerTime);
   const transcriptContainerRef = useRef<HTMLDivElement>(null);
   const talkTimeIntervalRef = useRef<number | null>(null);
+  // WebRTC refs
+  const pcRef = useRef<RTCPeerConnection | null>(null);
+  const localStreamRef = useRef<MediaStream | null>(null);
+  const remoteStreamRef = useRef<MediaStream | null>(null);
+  const remoteAudioRef = useRef<HTMLAudioElement | null>(null);
+  const roomRefRef = useRef<any>(null);
 
 
   const currentSpeaker = scrum.attendees[currentSpeakerIndex];
@@ -84,6 +103,22 @@ export const MeetingRoom: React.FC<MeetingRoomProps> = ({ scrum, onMeetingEnd })
         transcriptContainerRef.current.scrollTop = transcriptContainerRef.current.scrollHeight;
     }
   }, [transcripts, currentSpeaker]);
+
+  // Setup local audio stream on mount
+  useEffect(() => {
+    let mounted = true;
+    async function getLocal() {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+        if (!mounted) return;
+        localStreamRef.current = stream;
+      } catch (err) {
+        console.warn('Could not get user media', err);
+      }
+    }
+    getLocal();
+    return () => { mounted = false; };
+  }, []);
 
   // Effect to track speaker talk time
   useEffect(() => {
@@ -155,12 +190,185 @@ export const MeetingRoom: React.FC<MeetingRoomProps> = ({ scrum, onMeetingEnd })
     const finalSummary = await generateMeetingSummary(fullTranscript);
     setSummary(finalSummary);
     setIsSummarizing(false);
+    // cleanup WebRTC room if exists
+    await cleanupRoom();
   };
   
   const handleSaveAndExit = () => {
     const updatedScrum = { ...scrum, transcript: fullTranscript, summary: summary || undefined, notes };
     onMeetingEnd(updatedScrum, talkTimes);
   };
+
+  // ---------- WebRTC + Firestore signaling helpers ----------
+  const createPeerConnection = () => {
+    const pc = new RTCPeerConnection({
+      iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+    });
+
+    // setup remote stream
+    remoteStreamRef.current = new MediaStream();
+    pc.ontrack = (event) => {
+      event.streams[0].getTracks().forEach(t => remoteStreamRef.current?.addTrack(t));
+      if (remoteAudioRef.current) remoteAudioRef.current.srcObject = remoteStreamRef.current as MediaStream;
+    };
+
+    return pc;
+  };
+
+  const cleanupRoom = async () => {
+    try {
+      // close pc and stop tracks
+      if (pcRef.current) {
+        pcRef.current.getSenders().forEach(s => { try { s.track?.stop(); } catch(e){} });
+        pcRef.current.close();
+        pcRef.current = null;
+      }
+      if (localStreamRef.current) {
+        localStreamRef.current.getTracks().forEach(t => t.stop());
+        localStreamRef.current = null;
+      }
+
+      const roomRef = roomRefRef.current;
+      if (!roomRef) return;
+
+      // delete candidate docs and room doc (best-effort)
+      const callerCandidates = collection(roomRef, 'callerCandidates');
+      const calleeCandidates = collection(roomRef, 'calleeCandidates');
+      const removeCollection = async (colRef: any) => {
+        const qs = query(colRef);
+        const snap = await getDocs(qs);
+        const deletes = snap.docs.map(d => deleteDoc(d.ref));
+        await Promise.all(deletes);
+      };
+      await Promise.all([removeCollection(callerCandidates), removeCollection(calleeCandidates)]).catch(() => {});
+      await deleteDoc(roomRef).catch(() => {});
+      roomRefRef.current = null;
+    } catch (err) {
+      console.warn('cleanupRoom error', err);
+    }
+  };
+
+  const joinAsCaller = async (roomId: string) => {
+    const pc = createPeerConnection();
+    pcRef.current = pc;
+
+    // add local tracks
+    localStreamRef.current?.getTracks().forEach(track => pc.addTrack(track, localStreamRef.current as MediaStream));
+
+    // create room doc
+    const roomRef = doc(db, 'rooms', roomId);
+    roomRefRef.current = roomRef;
+
+    const callerCandidatesCollection = collection(roomRef, 'callerCandidates');
+
+    pc.onicecandidate = (event) => {
+      if (event.candidate) {
+        addDoc(callerCandidatesCollection, event.candidate.toJSON()).catch(err => console.warn(err));
+      }
+    };
+
+    // create offer
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+
+    const roomWithOffer = { offer: { type: offer.type, sdp: offer.sdp } };
+    await setDoc(roomRef, roomWithOffer);
+
+    // listen for remote answer
+    onSnapshot(roomRef, async (snapshot) => {
+      const data: any = snapshot.data();
+      if (!pcRef.current) return;
+      if (data && data.answer && !pcRef.current.currentRemoteDescription) {
+        const answerDesc = new RTCSessionDescription(data.answer);
+        await pcRef.current.setRemoteDescription(answerDesc);
+      }
+    });
+
+    // listen for callee candidates
+    const calleeCandidatesCollection = collection(roomRef, 'calleeCandidates');
+    onSnapshot(calleeCandidatesCollection, (snap) => {
+      snap.docChanges().forEach(change => {
+        if (change.type === 'added') {
+          const cand = change.doc.data();
+          pc.addIceCandidate(new RTCIceCandidate(cand)).catch(err => console.warn('addIceCandidate error', err));
+        }
+      });
+    });
+  };
+
+  const joinAsCallee = async (roomId: string) => {
+    const roomRef = doc(db, 'rooms', roomId);
+    roomRefRef.current = roomRef;
+
+    const roomSnapshot = await getDoc(roomRef);
+    if (!roomSnapshot.exists()) {
+      console.warn('Room does not exist:', roomId);
+      return;
+    }
+
+    const pc = createPeerConnection();
+    pcRef.current = pc;
+
+    // add local tracks
+    localStreamRef.current?.getTracks().forEach(track => pc.addTrack(track, localStreamRef.current as MediaStream));
+
+    const callerCandidatesCollection = collection(roomRef, 'callerCandidates');
+    const calleeCandidatesCollection = collection(roomRef, 'calleeCandidates');
+
+    pc.onicecandidate = (event) => {
+      if (event.candidate) {
+        addDoc(calleeCandidatesCollection, event.candidate.toJSON()).catch(err => console.warn(err));
+      }
+    };
+
+    const roomData: any = roomSnapshot.data();
+    if (roomData?.offer) {
+      const offerDesc = roomData.offer;
+      await pc.setRemoteDescription(new RTCSessionDescription(offerDesc));
+
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+
+      await updateDoc(roomRef, { answer: { type: answer.type, sdp: answer.sdp } });
+    }
+
+    // listen for caller candidates
+    onSnapshot(callerCandidatesCollection, (snap) => {
+      snap.docChanges().forEach(change => {
+        if (change.type === 'added') {
+          const cand = change.doc.data();
+          pc.addIceCandidate(new RTCIceCandidate(cand)).catch(err => console.warn('addIceCandidate error', err));
+        }
+      });
+    });
+  };
+
+  // Join room when meeting starts
+  useEffect(() => {
+    if (status !== MeetingStatus.IN_PROGRESS) return;
+
+    let mounted = true;
+    (async () => {
+      const roomId = scrum.id;
+      try {
+        const r = doc(db, 'rooms', roomId);
+        const snap = await getDoc(r);
+        if (!mounted) return;
+        if (!snap.exists()) {
+          // act as caller/host
+          await joinAsCaller(roomId);
+        } else {
+          // join as callee
+          await joinAsCallee(roomId);
+        }
+      } catch (err) {
+        console.warn('WebRTC join error', err);
+      }
+    })();
+
+    return () => { mounted = false; };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [status]);
 
   const handleUpdateTranscript = () => {
     if(currentUtterance.trim()){
@@ -301,6 +509,8 @@ export const MeetingRoom: React.FC<MeetingRoomProps> = ({ scrum, onMeetingEnd })
   
   return (
     <div className="h-screen flex flex-col bg-light-bg dark:bg-dark-bg text-light-text-primary dark:text-dark-text-primary">
+      {/* hidden audio element for remote stream */}
+      <audio ref={remoteAudioRef as any} autoPlay hidden />
       <header className="relative flex-shrink-0 p-4 border-b border-light-border dark:border-dark-border flex justify-between items-center">
         {/* Left: Branding */}
         <div className="flex items-center space-x-3">
